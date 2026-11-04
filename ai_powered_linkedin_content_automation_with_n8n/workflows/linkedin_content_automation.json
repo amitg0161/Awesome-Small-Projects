@@ -24,6 +24,7 @@
             {"id": "notes", "name": "sourceNotes", "value": "Use only the supplied context. Do not invent statistics, product claims, or investment advice.", "type": "string"},
             {"id": "dry-run", "name": "dryRun", "value": true, "type": "boolean"},
             {"id": "threshold", "name": "minConfidence", "value": 0.82, "type": "number"},
+            {"id": "approvers", "name": "approverUserIds", "value": "={{ ['REPLACE_WITH_SLACK_USER_ID'] }}", "type": "array"},
             {"id": "organization", "name": "organizationUrn", "value": "urn:li:organization:REPLACE_WITH_ORG_ID", "type": "string"},
             {"id": "run-id", "name": "runId", "value": "={{ String($execution.id) }}", "type": "string"}
           ]
@@ -86,7 +87,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { runId: $json.runId, status: ($json.dryRun || $json.confidenceScore < $json.minConfidence) ? 'queued_for_review' : 'queued_for_linkedin', finalText: $json.finalText, confidenceScore: $json.confidenceScore, dryRun: $json.dryRun, route: ($json.dryRun || $json.confidenceScore < $json.minConfidence) ? 'slack' : 'linkedin' } }}",
+        "jsonBody": "={{ { runId: $json.runId, status: 'queued_for_review', finalText: $json.finalText, confidenceScore: $json.confidenceScore, dryRun: $json.dryRun, route: 'slack' } }}",
         "options": {}
       },
       "id": "b39e61da-1613-47d6-a3c1-aae5d8e11ed2",
@@ -105,8 +106,8 @@
           "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2},
           "conditions": [
             {
-              "id": "review-route",
-              "leftValue": "={{ $('Compose Final').first().json.dryRun || $('Compose Final').first().json.confidenceScore < $('Compose Final').first().json.minConfidence }}",
+              "id": "publish-approved",
+              "leftValue": "={{ $('Slack Review').first().json.data.approved === true && !$('Compose Final').first().json.dryRun && $('Compose Final').first().json.confidenceScore >= $('Compose Final').first().json.minConfidence }}",
               "rightValue": "",
               "operator": {"type": "boolean", "operation": "true", "singleValue": true}
             }
@@ -119,23 +120,49 @@
       "name": "Approval Gate",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [1260, 300]
+      "position": [1780, 300]
     },
     {
       "parameters": {
+        "authentication": "accessToken",
         "resource": "message",
-        "operation": "post",
+        "operation": "sendAndWait",
         "select": "channel",
         "channelId": {"__rl": true, "value": "REPLACE_WITH_REVIEW_CHANNEL_ID", "mode": "id"},
-        "text": "={{ '*FinEdge LinkedIn draft for review*\\nConfidence: ' + $('Compose Final').first().json.confidenceScore + ' (minimum ' + $('Compose Final').first().json.minConfidence + ')\\nRoute: ' + ($('Compose Final').first().json.dryRun ? 'dry run' : 'below threshold') + '\\n\\n' + $('Compose Final').first().json.finalText + '\\n\\nRun: ' + $('Compose Final').first().json.runId }}",
-        "otherOptions": {}
+        "subject": "FinEdge LinkedIn draft approval",
+        "message": "={{ '*FinEdge LinkedIn draft for review*\\nConfidence: ' + $('Compose Final').first().json.confidenceScore + ' (minimum ' + $('Compose Final').first().json.minConfidence + ')\\nRoute: ' + ($('Compose Final').first().json.dryRun ? 'dry run — approval will not publish' : 'approval required') + '\\n\\n' + $('Compose Final').first().json.finalText + '\\n\\nRun: ' + $('Compose Final').first().json.runId }}",
+        "responseType": "approval",
+        "approvalOptions": {"values": {"approvalType": "double", "approveLabel": "Approve", "buttonApprovalStyle": "primary", "disapproveLabel": "Decline", "buttonDisapprovalStyle": "secondary"}},
+        "captureResponder": true,
+        "approvers": "={{ $('Brand Config').first().json.approverUserIds }}",
+        "unauthorizedReplyText": "Only configured approvers can approve or decline this post.",
+        "postDecisionBehavior": "showOutcome",
+        "options": {"appendAttribution": false}
       },
       "id": "ac3c863a-6dd6-4a2f-a0dc-2648fb8c0672",
       "name": "Slack Review",
       "type": "n8n-nodes-base.slack",
       "typeVersion": 2.3,
-      "position": [1510, 180],
-      "credentials": {"slackApi": {"id": "", "name": "FinEdge Slack"}},
+      "position": [1510, 300],
+      "credentials": {"slackApi": {"id": "", "name": "FinEdge Slack"}}
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/runs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { runId: $('Compose Final').first().json.runId, status: $('Slack Review').first().json.data.approved ? ($('Compose Final').first().json.dryRun ? 'approved_dry_run' : ($('Compose Final').first().json.confidenceScore < $('Compose Final').first().json.minConfidence ? 'approved_below_threshold' : 'rejected')) : 'rejected', finalText: $('Compose Final').first().json.finalText, confidenceScore: $('Compose Final').first().json.confidenceScore, dryRun: $('Compose Final').first().json.dryRun, route: 'slack' } }}",
+        "options": {}
+      },
+      "id": "ec27cfe9-a994-44dc-930a-f9ae1db53ceb",
+      "name": "Record Review Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2040, 180],
+      "credentials": {"httpHeaderAuth": {"id": "", "name": "FinEdge Microservice API Key"}},
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000
@@ -148,14 +175,14 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { runId: $('Compose Final').first().json.runId, status: 'sent_to_slack', finalText: $('Compose Final').first().json.finalText, confidenceScore: $('Compose Final').first().json.confidenceScore, dryRun: $('Compose Final').first().json.dryRun, route: 'slack' } }}",
+        "jsonBody": "={{ { runId: $('Compose Final').first().json.runId, status: 'approved_for_linkedin', finalText: $('Compose Final').first().json.finalText, confidenceScore: $('Compose Final').first().json.confidenceScore, dryRun: false, route: 'linkedin' } }}",
         "options": {}
       },
-      "id": "ec27cfe9-a994-44dc-930a-f9ae1db53ceb",
-      "name": "Record Review Delivery",
+      "id": "b9cbb28e-2c2d-4c77-9c89-793180d6841e",
+      "name": "Record Approval",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1760, 180],
+      "position": [2040, 420],
       "credentials": {"httpHeaderAuth": {"id": "", "name": "FinEdge Microservice API Key"}},
       "retryOnFail": true,
       "maxTries": 3,
@@ -178,11 +205,9 @@
       "name": "Publish to LinkedIn",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1510, 440],
+      "position": [2300, 420],
       "credentials": {"oAuth2Api": {"id": "", "name": "LinkedIn OAuth2 API"}},
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 2000
+      "retryOnFail": false
     },
     {
       "parameters": {
@@ -199,7 +224,7 @@
       "name": "Record LinkedIn Delivery",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1760, 440],
+      "position": [2560, 420],
       "credentials": {"httpHeaderAuth": {"id": "", "name": "FinEdge Microservice API Key"}},
       "retryOnFail": true,
       "maxTries": 3,
@@ -211,9 +236,10 @@
     "Brand Config": {"main": [[{"node": "AutoGen Microservice", "type": "main", "index": 0}]]},
     "AutoGen Microservice": {"main": [[{"node": "Compose Final", "type": "main", "index": 0}]]},
     "Compose Final": {"main": [[{"node": "Log Run", "type": "main", "index": 0}]]},
-    "Log Run": {"main": [[{"node": "Approval Gate", "type": "main", "index": 0}]]},
-    "Approval Gate": {"main": [[{"node": "Slack Review", "type": "main", "index": 0}], [{"node": "Publish to LinkedIn", "type": "main", "index": 0}]]},
-    "Slack Review": {"main": [[{"node": "Record Review Delivery", "type": "main", "index": 0}]]},
+    "Log Run": {"main": [[{"node": "Slack Review", "type": "main", "index": 0}]]},
+    "Slack Review": {"main": [[{"node": "Approval Gate", "type": "main", "index": 0}]]},
+    "Approval Gate": {"main": [[{"node": "Record Approval", "type": "main", "index": 0}], [{"node": "Record Review Decision", "type": "main", "index": 0}]]},
+    "Record Approval": {"main": [[{"node": "Publish to LinkedIn", "type": "main", "index": 0}]]},
     "Publish to LinkedIn": {"main": [[{"node": "Record LinkedIn Delivery", "type": "main", "index": 0}]]}
   },
   "active": false,

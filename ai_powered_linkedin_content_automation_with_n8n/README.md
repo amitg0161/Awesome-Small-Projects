@@ -1,26 +1,68 @@
 # FinEdge LinkedIn Content Automation
 
-An AutoGen-inspired FastAPI service generates three content ideas, a LinkedIn draft, a heuristic quality score, and hashtags. n8n schedules the run, composes the final text, records an audit trail in SQLite, and routes to Slack review or LinkedIn publishing.
+An AutoGen-inspired FastAPI service generates three content ideas, a LinkedIn draft, a heuristic quality score, and hashtags. An n8n workflow schedules the run, composes the final text, records an audit trail in SQLite, and requires an authorized Slack approval before any eligible LinkedIn publishing.
 
-## Architecture
+## End-to-end flow
 
-```text
-n8n Schedule (weekdays, 09:15 Asia/Kolkata)
-  -> Brand Config
-  -> AutoGen Microservice (/linkedin)
-       Ideation Agent -> Drafting Agent -> Hashtag Agent
-  -> Compose Final -> Log Run (/runs)
-  -> Approval Gate
-       dryRun=true OR confidence below threshold -> Slack Review
-       otherwise -> LinkedIn Posts API
-  -> Record delivery result (/runs)
+```mermaid
+flowchart TD
+    S["Weekday schedule<br/>09:15 Asia/Kolkata"] --> B["Brand Config<br/>brand, audience, source notes,<br/>dryRun, threshold, approvers"]
+    B --> API["FastAPI POST /linkedin"]
+    API --> I["Ideation agent<br/>three concepts"]
+    I --> D["Drafting agent<br/>one draft"]
+    D --> H["Hashtag agent<br/>3-5 unique tags"]
+    H --> Q["Quality heuristic<br/>score from 0 to 0.94"]
+    Q --> C["Compose final post"]
+    C --> L["Log queued_for_review<br/>SQLite via POST /runs"]
+    L --> W["Slack Review<br/>send and wait for approval"]
+    W --> G{"Authorized approval<br/>AND dryRun is false<br/>AND score meets threshold?"}
+    G -- "Yes: approved and eligible" --> A["Record approved_for_linkedin"]
+    A --> LI["Publish to LinkedIn<br/>no automatic retry"]
+    LI --> P["Record published"]
+    G -- "Declined, dry run,<br/>or score too low" --> R["Record review decision<br/>no publish"]
 ```
+
+### What happens in each stage
+
+1. **Schedule and configuration.** The workflow runs weekdays at 09:15 in `Asia/Kolkata`. **Brand Config** supplies the brand voice, audience, key points, prohibited claims, call to action, organization URN, review threshold, Slack approver IDs, and a `runId` based on the n8n execution ID. `dryRun` is `true` by default.
+2. **Content generation.** n8n calls `POST /linkedin`. The FastAPI service sends the brand and context through three sequential, narrowly scoped model requests: generate exactly three ideas, draft the post, and propose 3–5 unique hashtags. These are separate prompts implemented in this service; the project does not depend on the AutoGen library.
+3. **Quality score.** A transparent heuristic checks draft length, topic/CTA presence, key-point coverage, and prohibited phrases. It is a routing signal, not a probability or a fact-check. The score is capped at `0.94`.
+4. **Compose and audit.** n8n joins the draft and hashtags, then creates a `queued_for_review` SQLite run record before asking a reviewer. The service also persists successful generation and records generation failures.
+5. **Human decision.** Slack's native **Send and Wait for Response** operation pauses the workflow for an Approve or Decline decision. The app's configured signing secret lets n8n validate Slack callbacks, and configured user IDs restrict who can decide.
+6. **Fail-closed publish guard.** LinkedIn publishing is reachable only when the Slack response says `approved`, `dryRun` is `false`, and `confidenceScore >= minConfidence`. A decline, dry run, or low score is recorded as a review outcome and does not publish.
+7. **Delivery record.** The workflow records `approved_for_linkedin` before posting, then `published` after a successful LinkedIn response. The LinkedIn POST is not retried automatically: if a request times out after LinkedIn accepted it, retrying could create a duplicate.
+
+The flow diagram is also available as [the n8n workflow JSON](workflows/linkedin_content_automation.json). Import it inactive and configure all credentials and placeholders before running.
+
+### Publish decision table
+
+| Slack decision | `dryRun` | Score | Outcome |
+|---|---:|---:|---|
+| Decline | Any | Any | Record `rejected`; do not publish |
+| Approve | `true` | Any | Record `approved_dry_run`; do not publish |
+| Approve | `false` | Below `minConfidence` | Record `approved_below_threshold`; do not publish |
+| Approve | `false` | At or above `minConfidence` | Record `approved_for_linkedin`, attempt LinkedIn publish, then record `published` on success |
+
+This is a routing gate, not a content correctness guarantee. A reviewer should check claims and source material even when the score is high.
+
+### Service endpoints
+
+| Method and path | Purpose | Authentication |
+|---|---|---|
+| `GET /healthz` | Liveness check | Public |
+| `POST /linkedin` | Generate ideas, draft, score, tags, and trace; also persist a `generated` run | `X-API-Key` when `API_KEY` is configured |
+| `POST /runs` | Upsert a workflow status, route, final text, score, and dry-run flag | `X-API-Key` when configured |
+| `GET /runs/{run_id}` | Retrieve a run and its latest state | `X-API-Key` when configured |
+
+API request and response models enforce field lengths and score bounds. SQLite uses `runId` as the upsert key; set `AUTOMATION_DB_PATH` to a persistent mounted location in deployment.
 
 `AI_MODE=auto` is the default: it uses the OpenAI-compatible provider when `OPENAI_API_KEY` is set, and otherwise sends the three agent requests to local Ollama without an API key. `AI_MODE=ollama` forces Ollama, `AI_MODE=openai` forces the keyed provider, and `AI_MODE=demo` selects deterministic offline output for tests. The returned confidence is a transparent content-quality heuristic, not a probability that claims are true. Human review remains essential for regulated financial content.
 
 ## Local setup
 
 Python 3.10 or newer is required.
+
+> **Dependency note:** The dependency entries in `requirements.txt` and `requirements-dev.txt` have been cleared. Restore the required packages before installing or running the application; installing from the currently empty files will not install FastAPI or the other runtime dependencies.
 
 ```powershell
 python -m venv .venv
@@ -57,15 +99,15 @@ Set a strong `API_KEY` before exposing the service. Authenticated endpoints requ
 ## n8n setup
 
 1. Import `workflows/linkedin_content_automation.json` in n8n. Keep it inactive while configuring credentials.
-2. Open **Brand Config** and replace the sample topic, audience, points, call to action, prohibited claims, confidence threshold, and organization URN. `dryRun` is `true` by default.
-3. Update the three service URLs (`/linkedin` and `/runs`) to an address reachable from n8n. `host.docker.internal` is convenient on Docker Desktop; on a Linux VM, use the service/container DNS name or configure the Docker host gateway. If n8n runs directly on the VM, use `http://127.0.0.1:8000`.
+2. Open **Brand Config** and replace the sample topic, audience, points, call to action, prohibited claims, confidence threshold, Slack approver user IDs, and organization URN. `dryRun` is `true` by default.
+3. Update the service URLs (`/linkedin` and each `/runs` node) to an address reachable from n8n. `host.docker.internal` is convenient on Docker Desktop; on a Linux VM, use the service/container DNS name or configure the Docker host gateway. If n8n runs directly on the VM, use `http://127.0.0.1:8000`.
 4. Attach the HTTP Header Auth credential to each service HTTP node.
-5. Configure **Slack Review** with a Slack API credential and the review channel ID. This is a Slack OAuth/API integration, not an incoming webhook.
-6. For live posting only, configure the LinkedIn OAuth2 credential with the required organization-posting access, replace the LinkedIn version placeholder with a version currently supported by LinkedIn, and set a real organization URN. Keep `dryRun=true` until a full end-to-end dry run succeeds.
-7. Execute nodes in order: Brand Config, AutoGen Microservice, Compose Final, Log Run, Approval Gate, and the Slack branch. Then run the whole workflow manually. Inspect n8n execution data and `GET /runs/<runId>` before considering live posting.
-8. Set `dryRun=false` only when ready. A confidence score below `minConfidence` still routes to Slack; only a non-dry-run score at or above the threshold reaches LinkedIn. Activate the schedule after a supervised full run.
+5. Configure **Slack Review** with a Slack API credential, the review channel ID, and real Slack user IDs in `approverUserIds`. The placeholder ID is intentionally not an approver. In the Slack app, enable **Interactivity & Shortcuts**, set its Request URL to `https://<your-n8n-instance>/webhook-waiting-slack`, and add the app's Signing Secret to the n8n Slack credential. n8n validates Slack's signed approval callbacks. Keep the review channel private because its members can see draft content.
+6. For live posting only, configure the LinkedIn OAuth2 credential with the required organization-posting access, replace the LinkedIn version placeholder with a version currently supported by LinkedIn, and set a real organization URN. Keep `dryRun=true` until the full approval flow is verified.
+7. Execute nodes in order through **Slack Review**, approve or decline the message as a configured approver, and confirm the resulting branch and `GET /runs/<runId>` record. Then run the whole workflow manually and test both decisions.
+8. Set `dryRun=false` only when ready. Approval is always required; approval alone cannot bypass dry-run or the `minConfidence` threshold. Activate the schedule after a supervised full run.
 
-The schedule is weekdays at 09:15 in `Asia/Kolkata`; edit the Schedule Trigger if the organization's cadence differs. n8n execution history is enabled for success and error data, and outbound nodes retry transient failures three times. A failed delivery leaves the last recorded status (`queued_for_review` or `queued_for_linkedin`) visible in SQLite and the failed execution visible in n8n.
+The schedule is weekdays at 09:15 in `Asia/Kolkata`; edit the Schedule Trigger if the organization's cadence differs. n8n execution history is enabled for success and error data. Service and run-log nodes retry transient failures; the Slack approval node waits for a decision. The LinkedIn publish node deliberately does not retry because a timeout can occur after LinkedIn accepted a post. If publishing fails or times out, check LinkedIn and the n8n execution before manually retrying to avoid duplicate posts.
 
 ### LinkedIn OAuth notes
 
@@ -83,20 +125,24 @@ For a direct Ubuntu process, install requirements in a virtual environment and r
 - Standard application logs include run IDs and the selected mode; API secrets and request bodies are not logged.
 - n8n stores execution input/output and failure history. Protect n8n access and set an appropriate retention policy because execution data contains draft content.
 - The score checks length, topic/CTA presence, key-point coverage, and prohibited phrases. It does not verify factual accuracy, legal compliance, or suitability for publication.
-- The gate is a confidence/dry-run router, not an interactive human-approval callback. Low-score and dry-run drafts are delivered to Slack for a person to review; live high-score posts publish directly when dry run is disabled.
+- Every draft waits for a Slack approval. The workflow publishes only when an authorized approver approves, dry run is disabled, and the heuristic score meets the configured threshold. Approval and rejection decisions are recorded; a dry run or below-threshold score cannot publish.
+- The LinkedIn request is not retried automatically to reduce duplicate-post risk. A manual retry should happen only after checking whether LinkedIn accepted the first request.
 
 ## Tests and evidence
 
 Run the local service and workflow artifact tests with:
 
 ```bash
+python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-The tests cover the structured response, SQLite persistence/upsert, API-key enforcement, validation errors, and workflow routing. The included screenshot directory records local test evidence when captured. This workspace has no configured VM, n8n instance, Slack credential, or LinkedIn credential, so those external integrations must be exercised in the target environment; no live workflow execution is claimed here.
+The tests cover the structured response, SQLite persistence/upsert, API-key enforcement, validation errors, generation failure persistence, heuristic scoring for prohibited claims, JSON parsing, hashtag filtering, Ollama request construction, and guarded workflow approval routing. The latest local run completed with **11 passing tests** and one Starlette/httpx deprecation warning. The image below is a rendered screenshot summary of that test output; it is not evidence of a live n8n, Slack, or LinkedIn run.
 
-Local evidence: `screenshots/api-success.png` captures Swagger UI executing `POST /linkedin` with HTTP 200. The response contained three ideas, a draft, confidence `0.94`, and four hashtags; the corresponding run was persisted and retrievable from `/runs/screenshot-smoke-20261014`. Nine automated tests pass locally. A separate live no-key test used Ollama `qwen:latest`; all three agent calls returned HTTP 200 and `/linkedin` succeeded with run ID `ollama-live-smoke-final`. No n8n node or end-to-end workflow screenshot is included because no n8n instance is connected to this workspace.
+![Local pytest run: 11 passed, one deprecation warning](screenshots/pytest-results.png)
+
+The [API smoke-test screenshot](screenshots/api-success.png) records a previous Swagger UI request to `POST /linkedin` and its successful response. A separate previous local test used Ollama `qwen:latest`. These are local service checks only: this workspace has no configured VM, n8n instance, Slack credential, or LinkedIn credential, so no end-to-end external delivery is claimed.
 
 ## Reflection
 
-The three agent roles are separated so each stage has a narrow prompt and a traceable output, while the implementation avoids requiring an orchestration library for a small, inspectable pipeline. Auto mode supports keyless local Ollama while preferring a configured hosted provider; deterministic demo mode keeps tests repeatable. Local inference trades cloud-provider cost and data transfer for host compute, model management, and latency. A heuristic confidence score is useful for routing but is deliberately labeled as non-probabilistic. Slack-first dry runs, explicit thresholding, a persistent run log, and an inactive imported workflow reduce accidental publishing risk. The principal trade-off is that Slack review is a notification, not a workflow-based approval callback; adding interactive approval would require a signed Slack action endpoint and a second n8n trigger.
+The three prompt roles keep each generation step narrow and the pipeline inspectable without requiring an orchestration library. Auto mode supports local Ollama while preferring a configured hosted provider; demo mode keeps tests deterministic. Local inference trades provider data transfer and usage cost for host compute, model management, and latency. The quality heuristic is explicitly non-probabilistic. Slack approval, the dry-run default, a confidence threshold, an audit trail, an inactive imported workflow, and the absence of automatic LinkedIn retries provide operational guardrails, but they do not replace review of factual claims or monitoring of delivery outcomes.
