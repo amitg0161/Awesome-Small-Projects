@@ -1,0 +1,230 @@
+{
+  "name": "FinEdge LinkedIn Content Automation",
+  "nodes": [
+    {
+      "parameters": {"rule": {"interval": [{"field": "cronExpression", "expression": "15 9 * * 1-5"}]}},
+      "id": "1fcbe01b-8a22-4a83-9ba3-278a75ab6c20",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {"id": "brand-name", "name": "brandName", "value": "FinEdge Mumbai", "type": "string"},
+            {"id": "audience", "name": "audience", "value": "Indian finance professionals and digitally engaged customers", "type": "string"},
+            {"id": "tone", "name": "tone", "value": "clear, credible, practical, and human", "type": "string"},
+            {"id": "principles", "name": "keyPrinciples", "value": "={{ ['financial inclusion', 'responsible innovation', 'plain-language education'] }}", "type": "array"},
+            {"id": "prohibited", "name": "prohibitedClaims", "value": "={{ ['guaranteed returns', 'risk-free investment', 'assured profit'] }}", "type": "array"},
+            {"id": "topic", "name": "topic", "value": "responsible digital finance", "type": "string"},
+            {"id": "points", "name": "keyPoints", "value": "={{ ['financial literacy', 'informed decisions', 'responsible digital access'] }}", "type": "array"},
+            {"id": "cta", "name": "callToAction", "value": "What would you add to the conversation?", "type": "string"},
+            {"id": "notes", "name": "sourceNotes", "value": "Use only the supplied context. Do not invent statistics, product claims, or investment advice.", "type": "string"},
+            {"id": "dry-run", "name": "dryRun", "value": true, "type": "boolean"},
+            {"id": "threshold", "name": "minConfidence", "value": 0.82, "type": "number"},
+            {"id": "organization", "name": "organizationUrn", "value": "urn:li:organization:REPLACE_WITH_ORG_ID", "type": "string"},
+            {"id": "run-id", "name": "runId", "value": "={{ String($execution.id) }}", "type": "string"}
+          ]
+        },
+        "options": {}
+      },
+      "id": "46b1b5e3-8d4d-4ce5-9b80-6931130ca101",
+      "name": "Brand Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/linkedin",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { runId: $json.runId, brand: { name: $json.brandName, audience: $json.audience, tone: $json.tone, key_principles: $json.keyPrinciples, prohibited_claims: $json.prohibitedClaims }, context: { topic: $json.topic, key_points: $json.keyPoints, call_to_action: $json.callToAction, source_notes: $json.sourceNotes } } }}",
+        "options": {}
+      },
+      "id": "5cc28d4c-eeb0-466f-8434-519cbca9e31f",
+      "name": "AutoGen Microservice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300],
+      "credentials": {"httpHeaderAuth": {"id": "", "name": "FinEdge Microservice API Key"}},
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {"id": "run-id", "name": "runId", "value": "={{ $('Brand Config').first().json.runId }}", "type": "string"},
+            {"id": "final-text", "name": "finalText", "value": "={{ $('AutoGen Microservice').first().json.draft + '\\n\\n' + $('AutoGen Microservice').first().json.hashtags.join(' ') }}", "type": "string"},
+            {"id": "confidence", "name": "confidenceScore", "value": "={{ $('AutoGen Microservice').first().json.confidenceScore }}", "type": "number"},
+            {"id": "dry-run", "name": "dryRun", "value": "={{ $('Brand Config').first().json.dryRun }}", "type": "boolean"},
+            {"id": "threshold", "name": "minConfidence", "value": "={{ $('Brand Config').first().json.minConfidence }}", "type": "number"},
+            {"id": "org", "name": "organizationUrn", "value": "={{ $('Brand Config').first().json.organizationUrn }}", "type": "string"},
+            {"id": "hashtags", "name": "hashtags", "value": "={{ $('AutoGen Microservice').first().json.hashtags }}", "type": "array"}
+          ]
+        },
+        "options": {}
+      },
+      "id": "8de2c2aa-03b7-4fc9-9c17-f11c869d0d64",
+      "name": "Compose Final",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [760, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/runs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { runId: $json.runId, status: ($json.dryRun || $json.confidenceScore < $json.minConfidence) ? 'queued_for_review' : 'queued_for_linkedin', finalText: $json.finalText, confidenceScore: $json.confidenceScore, dryRun: $json.dryRun, route: ($json.dryRun || $json.confidenceScore < $json.minConfidence) ? 'slack' : 'linkedin' } }}",
+        "options": {}
+      },
+      "id": "b39e61da-1613-47d6-a3c1-aae5d8e11ed2",
+      "name": "Log Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1020, 300],
+      "credentials": {"httpHeaderAuth": {"id": "", "name": "FinEdge Microservice API Key"}},
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2},
+          "conditions": [
+            {
+              "id": "review-route",
+              "leftValue": "={{ $('Compose Final').first().json.dryRun || $('Compose Final').first().json.confidenceScore < $('Compose Final').first().json.minConfidence }}",
+              "rightValue": "",
+              "operator": {"type": "boolean", "operation": "true", "singleValue": true}
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e1695094-0daa-4264-a93b-72095e947c6d",
+      "name": "Approval Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1260, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {"__rl": true, "value": "REPLACE_WITH_REVIEW_CHANNEL_ID", "mode": "id"},
+        "text": "={{ '*FinEdge LinkedIn draft for review*\\nConfidence: ' + $('Compose Final').first().json.confidenceScore + ' (minimum ' + $('Compose Final').first().json.minConfidence + ')\\nRoute: ' + ($('Compose Final').first().json.dryRun ? 'dry run' : 'below threshold') + '\\n\\n' + $('Compose Final').first().json.finalText + '\\n\\nRun: ' + $('Compose Final').first().json.runId }}",
+        "otherOptions": {}
+      },
+      "id": "ac3c863a-6dd6-4a2f-a0dc-2648fb8c0672",
+      "name": "Slack Review",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [1510, 180],
+      "credentials": {"slackApi": {"id": "", "name": "FinEdge Slack"}},
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/runs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { runId: $('Compose Final').first().json.runId, status: 'sent_to_slack', finalText: $('Compose Final').first().json.finalText, confidenceScore: $('Compose Final').first().json.confidenceScore, dryRun: $('Compose Final').first().json.dryRun, route: 'slack' } }}",
+        "options": {}
+      },
+      "id": "ec27cfe9-a994-44dc-930a-f9ae1db53ceb",
+      "name": "Record Review Delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 180],
+      "credentials": {"httpHeaderAuth": {"id": "", "name": "FinEdge Microservice API Key"}},
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.linkedin.com/rest/posts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "LinkedIn-Version", "value": "REPLACE_WITH_CURRENT_YYYYMM_VERSION"}, {"name": "X-Restli-Protocol-Version", "value": "2.0.0"}]},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { author: $('Compose Final').first().json.organizationUrn, commentary: $('Compose Final').first().json.finalText, visibility: 'PUBLIC', distribution: { feedDistribution: 'MAIN_FEED', targetEntities: [], thirdPartyDistributionChannels: [] }, lifecycleState: 'PUBLISHED', isReshareDisabledByAuthor: false } }}",
+        "options": {}
+      },
+      "id": "e3c27799-1b88-40d0-91de-1be46ccc0b16",
+      "name": "Publish to LinkedIn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1510, 440],
+      "credentials": {"oAuth2Api": {"id": "", "name": "LinkedIn OAuth2 API"}},
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/runs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { runId: $('Compose Final').first().json.runId, status: 'published', finalText: $('Compose Final').first().json.finalText, confidenceScore: $('Compose Final').first().json.confidenceScore, dryRun: $('Compose Final').first().json.dryRun, route: 'linkedin' } }}",
+        "options": {}
+      },
+      "id": "34b957e2-3f1d-4b33-8d72-6cf1c8971b2f",
+      "name": "Record LinkedIn Delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 440],
+      "credentials": {"httpHeaderAuth": {"id": "", "name": "FinEdge Microservice API Key"}},
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {"main": [[{"node": "Brand Config", "type": "main", "index": 0}]]},
+    "Brand Config": {"main": [[{"node": "AutoGen Microservice", "type": "main", "index": 0}]]},
+    "AutoGen Microservice": {"main": [[{"node": "Compose Final", "type": "main", "index": 0}]]},
+    "Compose Final": {"main": [[{"node": "Log Run", "type": "main", "index": 0}]]},
+    "Log Run": {"main": [[{"node": "Approval Gate", "type": "main", "index": 0}]]},
+    "Approval Gate": {"main": [[{"node": "Slack Review", "type": "main", "index": 0}], [{"node": "Publish to LinkedIn", "type": "main", "index": 0}]]},
+    "Slack Review": {"main": [[{"node": "Record Review Delivery", "type": "main", "index": 0}]]},
+    "Publish to LinkedIn": {"main": [[{"node": "Record LinkedIn Delivery", "type": "main", "index": 0}]]}
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "versionId": "c080dd0b-19a9-45ef-a6eb-3658f2801e11",
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}

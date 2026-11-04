@@ -91,5 +91,19 @@ NutriWise is a local-first calorie tracker that converts natural-language meal d
 - Run command:
   - `python app.py`
 
+## 8. AI-Powered LinkedIn Content Automation with n8n
+This project automates LinkedIn content generation for a finance-focused brand using a FastAPI service, AutoGen-inspired agents, and n8n orchestration.
+
+- Features: ideation, draft generation, heuristic quality scoring, hashtag suggestions, scheduling, approval flow, Slack review, and optional LinkedIn publishing
+- Tech stack: Python, FastAPI, SQLite, n8n, Ollama/OpenAI-compatible models, and Slack/LinkedIn integrations
+- Goal: create a repeatable thought-leadership content pipeline with human review and auditable delivery logs
+- Files:
+  - ai_powered_linkedin_content_automation_with_n8n/main.py
+  - ai_powered_linkedin_content_automation_with_n8n/README.md
+  - ai_powered_linkedin_content_automation_with_n8n/workflows/linkedin_content_automation.json
+  - ai_powered_linkedin_content_automation_with_n8n/.env.example
+- Run command:
+  - `uvicorn main:app --reload --env-file .env`
+
 ## Summary
-These projects demonstrate practical applications of Python, data analysis, forecasting, visualization, business intelligence, decision-support tools, and AI-assisted interactive applications.
+These projects demonstrate practical applications of Python, data analysis, forecasting, visualization, business intelligence, decision-support tools, workflow automation, and AI-assisted interactive applications.
