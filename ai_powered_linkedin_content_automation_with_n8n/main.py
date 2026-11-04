@@ -255,6 +255,21 @@ def parse_agent_json(content: str) -> dict[str, Any]:
     return parsed
 
 
+def parse_agent_hashtags(content: str) -> list[str]:
+    hashtags = parse_agent_json(content).get("hashtags")
+    if not isinstance(hashtags, list) or not 3 <= len(hashtags) <= 5:
+        raise ValueError("Expected three to five hashtags")
+    valid_hashtags = list(
+        dict.fromkeys(
+            tag for tag in hashtags
+            if isinstance(tag, str) and re.fullmatch(r"#[A-Za-z0-9]{2,40}", tag)
+        )
+    )
+    if not 3 <= len(valid_hashtags) <= 5:
+        raise ValueError("Expected three to five unique valid hashtags")
+    return valid_hashtags
+
+
 async def run_agents(request: LinkedInRequest) -> tuple[list[str], str, list[str], str]:
     brand = request.brand
     context = request.context
@@ -296,15 +311,10 @@ async def run_agents(request: LinkedInRequest) -> tuple[list[str], str, list[str
         ai_mode,
     )
     try:
-        hashtags = parse_agent_json(hashtag_result)["hashtags"]
-        if not isinstance(hashtags, list) or not 3 <= len(hashtags) <= 5:
-            raise ValueError("Expected three to five hashtags")
-        hashtags = [tag for tag in hashtags if isinstance(tag, str) and re.fullmatch(r"#[A-Za-z0-9]{2,40}", tag)]
-        if not hashtags:
-            raise ValueError("No valid hashtags returned")
+        hashtags = parse_agent_hashtags(hashtag_result)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         raise HTTPException(status_code=502, detail="Hashtag Agent returned invalid JSON") from error
-    return ideas, draft.strip(), hashtags[:5], ai_mode
+    return ideas, draft.strip(), hashtags, ai_mode
 
 
 @asynccontextmanager

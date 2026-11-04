@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 import main
@@ -122,6 +123,19 @@ def test_prohibited_claim_lowers_confidence_below_publish_threshold():
 
 def test_agent_json_accepts_ollama_markdown_fences():
     assert main.parse_agent_json('```json\n{"ideas": ["one"]}\n```') == {"ideas": ["one"]}
+
+
+def test_agent_hashtags_requires_three_unique_valid_tags():
+    assert main.parse_agent_hashtags(
+        '{"hashtags": ["#Fintech", "#DigitalFinance", "#Fintech", "#MoneySmart"]}'
+    ) == ["#Fintech", "#DigitalFinance", "#MoneySmart"]
+
+
+def test_agent_hashtags_rejects_too_few_valid_tags_after_filtering():
+    with pytest.raises(ValueError, match="three to five unique valid hashtags"):
+        main.parse_agent_hashtags(
+            '{"hashtags": ["#Fintech", "#DigitalFinance", "#Fintech", "not-a-tag"]}'
+        )
 
 
 def test_auto_mode_uses_ollama_without_openai_key(tmp_path, monkeypatch):
